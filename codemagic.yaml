@@ -1,0 +1,62 @@
+
+workflows:
+  noxerra-ios:
+    name: Build NOXERRA IPA
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+
+    environment:
+      xcode: latest
+
+    scripts:
+      - name: Extract NOXERRA
+        script: |
+          #!/bin/bash
+          set -euo pipefail
+          cd "$CM_BUILD_DIR"
+          shopt -s nullglob
+          files=(NOXERRA*.zip)
+          if [ ${#files[@]} -ne 1 ]; then
+            echo "Keep exactly one NOXERRA ZIP"
+            exit 1
+          fi
+          mkdir -p source
+          unzip -q "${files[0]}" -d source
+          project=$(find source -path '*/Erosion.xcodeproj/project.pbxproj' -print -quit)
+          test -n "$project"
+          dirname "$(dirname "$project")" > appdir.txt
+
+      - name: Compile iOS app
+        script: |
+          #!/bin/bash
+          set -euo pipefail
+          cd "$CM_BUILD_DIR"
+          appdir=$(cat appdir.txt)
+          xcodebuild \
+            -project "$appdir/Erosion.xcodeproj" \
+            -scheme Erosion \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$CM_BUILD_DIR/derived" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee NOXERRA-build.log
+
+      - name: Create unsigned IPA
+        script: |
+          #!/bin/bash
+          set -euo pipefail
+          cd "$CM_BUILD_DIR"
+          app="derived/Build/Products/Release-iphoneos/Erosion.app"
+          test -d "$app"
+          mkdir -p package/Payload
+          ditto "$app" package/Payload/Erosion.app
+          (
+            cd package
+            zip -qry ../NOXERRA-v6.4.4.ipa Payload
+          )
+
+    artifacts:
+      - NOXERRA-v6.4.4.ipa
+      - NOXERRA-build.log
