@@ -1,0 +1,112 @@
+
+name: Build NOXERRA IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build NOXERRA v6.4.4
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Locate or extract NOXERRA source
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(NOXERRA*.zip)
+
+          if (( ${#archives[@]} > 1 )); then
+            printf 'ERROR: Multiple NOXERRA ZIPs found. Keep only the newest one.\n' >&2
+            printf 'Found: %s\n' "${archives[@]}" >&2
+            exit 1
+          fi
+
+          if (( ${#archives[@]} == 1 )); then
+            echo "Extracting ${archives[0]}"
+            source_dir="$RUNNER_TEMP/noxerra-src"
+            mkdir -p "$source_dir"
+            unzip -q "${archives[0]}" -d "$source_dir"
+          else
+            echo 'No NOXERRA ZIP found; using checked-out source files.'
+            source_dir="$GITHUB_WORKSPACE"
+          fi
+
+          project_file="$(find "$source_dir" -type f \
+            -path '*/Erosion.xcodeproj/project.pbxproj' -print -quit)"
+
+          if [[ -z "$project_file" ]]; then
+            echo 'ERROR: Erosion.xcodeproj/project.pbxproj not found.' >&2
+            exit 1
+          fi
+
+          app_dir="$(dirname "$(dirname "$project_file")")"
+          echo "APPDIR=$app_dir" >> "$GITHUB_ENV"
+          echo "Using Xcode project: $app_dir/Erosion.xcodeproj"
+          test -f "$app_dir/Erosion.xcodeproj/project.pbxproj"
+
+      - name: Show Xcode version and SDKs
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Build unsigned iOS application
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project "$APPDIR/Erosion.xcodeproj" \
+            -scheme Erosion \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            clean build \
+            2>&1 | tee "$GITHUB_WORKSPACE/NOXERRA-build.log"
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/Erosion.app"
+          if [[ ! -d "$app" ]]; then
+            echo "ERROR: Compiled application not found at: $app" >&2
+            exit 1
+          fi
+          package="$RUNNER_TEMP/NOXERRA-package"
+          mkdir -p "$package/Payload"
+          ditto "$app" "$package/Payload/Erosion.app"
+          (
+            cd "$package"
+            zip -qry "$GITHUB_WORKSPACE/NOXERRA-v6.4.4-unsigned.ipa" Payload
+          )
+          test -s "$GITHUB_WORKSPACE/NOXERRA-v6.4.4-unsigned.ipa"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: NOXERRA-v6.4.4-IPA
+          path: NOXERRA-v6.4.4-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NOXERRA-Build-Logs
+          path: NOXERRA-build.log
+          if-no-files-found: warn
